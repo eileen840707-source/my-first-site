@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouBike 即時看板</title>
+<style>
+  :root{
+    --brand:#1b7a4b; --brand-2:#2fae73;
+    --ink:#1f2733; --muted:#6b7480; --line:#e6e8ec; --card:#fff; --bg:#f3f4f6;
+    --warn-bg:#fff7e6; --warn-line:#e0a800; --ok:#0c6b41;
+  }
+  *{box-sizing:border-box}
+  html{color-scheme:light}
+  body{
+    margin:0; background:var(--bg); color:var(--ink); line-height:1.6;
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+    padding:24px 16px 48px; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:900px; margin:0 auto}
+  h1{font-size:clamp(20px,4vw,28px); margin:0 0 4px}
+  .src{color:var(--muted); font-size:13px; margin:0 0 18px}
+
+  .card{background:var(--card); border:1px solid var(--line); border-radius:16px;
+        padding:18px; margin-bottom:14px}
+  h2{font-size:16px; margin:0 0 12px}
+  h2 .note{font-weight:400; color:var(--muted); font-size:13px}
+
+  .status{border-radius:12px; padding:12px 14px; font-size:13.5px; margin-bottom:14px;
+          border:1px solid var(--line); background:#fff}
+  .status.live{border-color:#9ad5b8; background:#eafaf2; color:var(--ok)}
+  .status.fallback{border-color:var(--warn-line); background:var(--warn-bg)}
+  .status b{display:block; margin-bottom:2px}
+
+  .kpis{display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); margin-bottom:14px}
+  .kpi{background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px}
+  .kpi .n{font-size:28px; font-weight:800; color:var(--brand)}
+  .kpi .t{font-size:13px; color:var(--muted)}
+
+  .bar{display:grid; grid-template-columns:minmax(72px,auto) 1fr auto; gap:10px;
+       align-items:center; margin-bottom:8px; font-size:14px}
+  /* span 預設是 inline，width/height 會被忽略 —— 一定要 block 長條才畫得出來 */
+  .bar .track{display:block; width:100%}
+  .bar .fill{display:block; height:14px; border-radius:999px;
+             background:linear-gradient(90deg,var(--brand),var(--brand-2)); min-width:3px}
+  .bar .v{font-variant-numeric:tabular-nums; color:var(--muted); font-size:13px}
+
+  .scroll{overflow-x:auto}
+  table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:520px}
+  th,td{text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); white-space:nowrap}
+  th{background:#f7f9fc; font-size:12.5px; color:var(--muted)}
+  td.num{text-align:right; font-variant-numeric:tabular-nums}
+  .zero{color:#b32340; font-weight:700}
+
+  button{
+    font:inherit; font-weight:700; cursor:pointer; color:#fff; background:var(--brand);
+    border:0; border-radius:12px; padding:10px 16px;
+  }
+  button:disabled{opacity:.55; cursor:default}
+  .foot{color:var(--muted); font-size:12px; text-align:center; margin-top:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>🚲 YouBike 即時看板</h1>
+  <p class="src">資料來源：臺北市政府 YouBike2.0 公共自行車即時資訊・每分鐘更新</p>
+
+  <div id="status" class="status">⏳ 正在取得即時資料…</div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="n" id="kStations">—</div><div class="t">站點數</div></div>
+    <div class="kpi"><div class="n" id="kBikes">—</div><div class="t">目前可借車輛</div></div>
+    <div class="kpi"><div class="n" id="kDocks">—</div><div class="t">目前可還空位</div></div>
+    <div class="kpi"><div class="n" id="kEmpty">—</div><div class="t">無車可借的站</div></div>
+  </div>
+
+  <div class="card">
+    <h2>各行政區站點數 <span class="note">（前 10 名）</span></h2>
+    <div id="bars"></div>
+  </div>
+
+  <div class="card">
+    <h2>目前車最多的站 <span class="note">（前 30 名）</span></h2>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>站名</th><th>行政區</th><th>可借</th><th>可還</th><th>總車位</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+  </div>
+
+  <p><button id="reload" type="button">↻ 重新抓一次</button>
+     <span id="stamp" style="color:var(--muted);font-size:13px;margin-left:10px"></span></p>
+
+  <p class="foot">
+    這是 Zero to Deploy 的教學練習範本，不是官方看板。<br>
+    這頁完全公開：這份開放資料只有「哪一站現在剩幾台車」，沒有「誰借了車」，所以可以這樣放。
+  </p>
+</div>
+
+<script>
+  // ===== 想換成別份開放資料，改這一行就好 =====
+  var API = "https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json";
+
+  // 萬一連不到（對方關掉跨來源／沒網路／維護中）就用這份內建範例，畫面才不會空白
+  var SAMPLE = [
+    { sna:"YouBike2.0_捷運科技大樓站", sarea:"大安區", available_rent_bikes:13, available_return_bikes:14, Quantity:28, mday:"（範例資料）" },
+    { sna:"YouBike2.0_臺北市政府", sarea:"信義區", available_rent_bikes:22, available_return_bikes:8, Quantity:31, mday:"（範例資料）" },
+    { sna:"YouBike2.0_捷運市政府站(3號出口)", sarea:"信義區", available_rent_bikes:5, available_return_bikes:25, Quantity:31, mday:"（範例資料）" },
+    { sna:"YouBike2.0_臺北車站(東三門)", sarea:"中正區", available_rent_bikes:0, available_return_bikes:40, Quantity:41, mday:"（範例資料）" },
+    { sna:"YouBike2.0_大安森林公園站", sarea:"大安區", available_rent_bikes:17, available_return_bikes:11, Quantity:29, mday:"（範例資料）" },
+    { sna:"YouBike2.0_士林區公所", sarea:"士林區", available_rent_bikes:9, available_return_bikes:12, Quantity:22, mday:"（範例資料）" },
+    { sna:"YouBike2.0_內湖科技園區", sarea:"內湖區", available_rent_bikes:31, available_return_bikes:4, Quantity:36, mday:"（範例資料）" },
+    { sna:"YouBike2.0_松山車站", sarea:"松山區", available_rent_bikes:6, available_return_bikes:19, Quantity:26, mday:"（範例資料）" }
+  ];
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(v) {
+    return String(v == null ? "" : v)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // 站名前面都有「YouBike2.0_」，顯示時拿掉比較好讀
+  function nice(name) { return String(name || "").replace(/^YouBike2\.0_/, ""); }
+
+  function num(v) { return Number(v) || 0; }
+
+  function render(rows, live, why) {
+    var s = $("status");
+    if (live) {
+      s.className = "status live";
+      s.innerHTML = "<b>✅ 這是剛剛抓回來的即時資料</b>" +
+        "過幾分鐘再按一次「重新抓一次」，數字就會變 —— 這就是為什麼要用 API，而不是手動複製貼上。";
+    } else {
+      s.className = "status fallback";
+      s.innerHTML = "<b>⚠️ 抓不到即時資料，畫面顯示的是內建的範例資料</b>" +
+        "可能原因：沒有網路、對方維護中，或對方調整了跨來源（CORS）設定。" +
+        (why ? "（訊息：" + esc(why) + "）" : "");
+    }
+
+    // KPI
+    var bikes = 0, docks = 0, empty = 0;
+    rows.forEach(function (r) {
+      bikes += num(r.available_rent_bikes);
+      docks += num(r.available_return_bikes);
+      if (num(r.available_rent_bikes) === 0) empty++;
+    });
+    $("kStations").textContent = rows.length.toLocaleString("zh-TW");
+    $("kBikes").textContent = bikes.toLocaleString("zh-TW");
+    $("kDocks").textContent = docks.toLocaleString("zh-TW");
+    $("kEmpty").textContent = empty.toLocaleString("zh-TW");
+    $("stamp").textContent = rows.length ? "資料時間：" + (rows[0].mday || "—") : "";
+
+    // 各行政區站數（前 10）
+    var byArea = {};
+    rows.forEach(function (r) {
+      var k = r.sarea || "（未填）";
+      byArea[k] = (byArea[k] || 0) + 1;
+    });
+    var pairs = Object.keys(byArea).map(function (k) { return [k, byArea[k]]; })
+      .sort(function (a, b) { return b[1] - a[1]; }).slice(0, 10);
+    var max = pairs.length ? pairs[0][1] : 1;
+    $("bars").innerHTML = pairs.map(function (p) {
+      var pct = Math.round((p[1] / max) * 100);
+      return '<div class="bar"><span>' + esc(p[0]) + '</span>' +
+             '<span class="track"><span class="fill" style="width:' + pct + '%"></span></span>' +
+             '<span class="v">' + p[1] + ' 站</span></div>';
+    }).join("") || '<p style="color:var(--muted)">沒有資料</p>';
+
+    // 車最多的前 30 站
+    var top = rows.slice().sort(function (a, b) {
+      return num(b.available_rent_bikes) - num(a.available_rent_bikes);
+    }).slice(0, 30);
+    $("rows").innerHTML = top.map(function (r) {
+      var rent = num(r.available_rent_bikes);
+      return "<tr>" +
+        "<td>" + esc(nice(r.sna)) + "</td>" +
+        "<td>" + esc(r.sarea) + "</td>" +
+        '<td class="num' + (rent === 0 ? " zero" : "") + '">' + rent + "</td>" +
+        '<td class="num">' + num(r.available_return_bikes) + "</td>" +
+        '<td class="num">' + num(r.Quantity) + "</td>" +
+      "</tr>";
+    }).join("");
+  }
+
+  function load() {
+    var btn = $("reload");
+    btn.disabled = true;
+    $("status").className = "status";
+    $("status").textContent = "⏳ 正在取得即時資料…";
+
+    fetch(API)
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        // 這個 API 回傳的是一個陣列，每一站一個物件
+        var rows = Array.isArray(data) ? data : (data && data.retVal) || [];
+        if (!rows.length) throw new Error("回傳 0 筆");
+        render(rows, true);
+      })
+      .catch(function (err) { render(SAMPLE, false, err && err.message); })
+      .then(function () { btn.disabled = false; });
+  }
+
+  $("reload").addEventListener("click", load);
+  load();
+</script>
+</body>
+</html>
